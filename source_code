@@ -1,0 +1,380 @@
+//|-----------------------------------------------------------------------------------------------------|
+//| Welcome To My Face Attendance (Detection) App                                                     |
+//|-----------------------------------------------------------------------------------------------------|
+#include <opencv2/opencv.hpp>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <filesystem>  //[ C++17 or higher required ]
+#include <fstream>     //[ For file operations ]
+
+using namespace cv;
+using namespace std;
+namespace fs = std::filesystem;
+//|-----------------------------------------------|
+//|Structure to store each student's face and name|
+//|-----------------------------------------------|
+struct Student {
+    string name;
+    Mat face;
+};
+//|-----------------------------------------------|
+//| Function to detect a face and return it       |
+//|-----------------------------------------------|
+Mat detectFace(Mat& img, CascadeClassifier& face_cascade) {
+    vector<Rect> faces;
+    Mat gray, faceROI;
+    cvtColor(img, gray, COLOR_BGR2GRAY);  //[ Convert frame to grayscale ]
+    face_cascade.detectMultiScale(gray, faces, 1.1, 4);  //[ Detect faces ]
+
+    if (!faces.empty()) {
+        faceROI = gray(faces[0]);  //[ Get the first detected face ]
+    }
+    return faceROI;
+}
+//|---------------------------------------------------|
+//|Function to capture and save multiple student faces|
+//|---------------------------------------------------|
+void captureReferenceFaces(VideoCapture& cap, CascadeClassifier& face_cascade, vector<Student>& students) {
+    string folderPath = "C:\\Users\\manis\\Downloads\\reference_faces\\";
+    //|--------------------------------------|
+    //|Create the folder if it does not exist|
+    //|--------------------------------------|
+    if (!fs::exists(folderPath)) {
+        fs::create_directory(folderPath);
+    }
+
+    int n;
+    cout << "|-------------------------------------|\n";
+    cout << "|Enter number of students to register:|\n";
+    cout << "|-------------------------------------|\n";
+    cin >> n;
+
+    for (int i = 0; i < n; i++) {
+        string name;
+        cout << "[Enter name of student: ]" << (i + 1) << ": ";
+        cin >> name;
+
+        Mat frame, faceROI;
+        namedWindow("Capture Student Face", WINDOW_AUTOSIZE);  //[ Create window]
+
+        while (true) {
+            cap >> frame;  //[ Capture frame from camera]
+            faceROI = detectFace(frame, face_cascade);
+            if (!faceROI.empty()) {
+                resize(faceROI, faceROI, Size(100, 100));  // [Resize to standard size for storage]
+                //|---------------------------------|
+                //|Save the face image to the folder|
+                //|---------------------------------|
+                string filePath = folderPath + name + ".jpg";
+                imwrite(filePath, faceROI);
+
+                students.push_back({ name, faceROI });  // [Save the student face and name in memory]
+                cout << "|Captured and saved face for |" << name << ".\n";
+                break;
+            }
+            imshow("Capture Student Face", frame);  //[ Show the frame with face detection]
+            if (waitKey(300) >= 0) break;  // [Exit on key press]
+        }
+        destroyWindow("Capture Student Face");  // [Destroy window after capturing face]
+    }
+}
+//|----------------------------------------------------------|
+//|Function to load reference faces from the folder |
+//|----------------------------------------------------------|
+void loadReferenceFaces(vector<Student>& students) {
+    string folderPath = "C:\\Users\\manis\\Downloads\\reference_faces\\";
+
+    //[ Load all images from the folder]
+    for (const auto& entry : fs::directory_iterator(folderPath)) {
+        string filePath = entry.path().string();
+        Mat face = imread(filePath, IMREAD_GRAYSCALE);
+        if (!face.empty()) {
+            string name = entry.path().stem().string();  //[ Extract name from file path]
+            resize(face, face, Size(100, 100));  // [Resize to standard size]
+            students.push_back({ name, face });
+        }
+    }
+}
+
+//|----------------------------------------------------------|
+//|Function to compare faces and mark attendance |
+//|----------------------------------------------------------|
+void markAttendance(VideoCapture& cap, CascadeClassifier& face_cascade, vector<Student>& students) {
+    string attendanceFolderPath = "C:\\Users\\manis\\Downloads\\attandance\\";
+
+    //|-------------------------------------------|
+    //| Create the folder if it does not exist|
+    //|-------------------------------------------|
+    if (!fs::exists(attendanceFolderPath)) {
+        fs::create_directory(attendanceFolderPath);
+    }
+
+    //|-------------------------------|
+    //| Find a unique filename   |
+    //|-------------------------------|
+    int fileCounter = 1;
+    string attendanceFilePath;
+    do {
+        attendanceFilePath = attendanceFolderPath + "attendance_" + to_string(fileCounter) + ".txt";
+        fileCounter++;
+    } while (fs::exists(attendanceFilePath));  // [Check if the file already exists]
+
+    ofstream attendanceFile(attendanceFilePath);
+
+    if (!attendanceFile.is_open()) {
+        cout << "|-----------------------------|\n";
+        cout << "|Error opening attendance file|\n";
+        cout << "|-----------------------------|\n";
+        return;
+    }
+
+    namedWindow("Mark Attendance", WINDOW_AUTOSIZE);  //[ Create window]
+
+    vector<string> present_students;
+    vector<string> all_student_names;
+    set<string> absent_students;  //[Use a set to track absent students]
+
+    for (const auto& student : students) {
+        all_student_names.push_back(student.name);
+    }
+
+    while (true) {
+        Mat frame, faceROI;
+        cap >> frame;  //[capture frame from camera]
+        faceROI = detectFace(frame, face_cascade);
+
+        if (!faceROI.empty()) {
+            resize(faceROI, faceROI, Size(100, 100));  //[ Resize detected face to standard size]
+
+            vector<string> detected_students;
+            for (const auto& student : students) {
+                double diff = norm(student.face, faceROI, NORM_L2);  // [Compare detected face with stored face]
+
+                if (diff < 5000) {  //[Threshold for face matching]
+                    if (find(detected_students.begin(),detected_students.end(),student.name)== detected_students.end()){
+                        detected_students.push_back(student.name);  // [Mark student as present]
+                    }
+                }
+            }
+            //|------------------------------------------------------|
+            //|Write detected students to the attendance file|
+            //|------------------------------------------------------|
+            for (const auto& name : detected_students) {
+                if (find(present_students.begin(), present_students.end(), name) == present_students.end()) {
+                    present_students.push_back(name);
+                    attendanceFile << name << " -> present.\n";
+                    cout << name << " is present.\n";  // [Display on screen]
+                }
+            }
+            //|----------------------------------------------------------------|
+            //|Write absent students to the attendance file only once|
+            //|----------------------------------------------------------------|
+            for (const auto& name : all_student_names) {
+                if (find(detected_students.begin(), detected_students.end(), name) == detected_students.end() &&
+                    find(present_students.begin(), present_students.end(), name) == present_students.end() &&
+                    absent_students.find(name) == absent_students.end()) {
+                    absent_students.insert(name);
+                    attendanceFile << name << " -> absent.\n";
+                }
+            }
+        }
+        imshow("Mark Attendance", frame);  // [Show the frame with face detection]
+        if (waitKey(30) >= 0) break;  // [Exit on key press]
+    }
+
+    attendanceFile.close();  // [Close the attendance file]
+    destroyWindow("Mark Attendance");  //[ Destroy window after marking attendance]
+}
+
+//|--------------------------------------------------------|
+//|Function to update a student's reference image|
+//|--------------------------------------------------------|
+void updateStudentFace(VideoCapture& cap, CascadeClassifier& face_cascade, vector<Student>& students) {
+    string folderPath = "C:\\Users\\manis\\Downloads\\reference_faces\\";
+
+    if (students.empty()) {
+        cout << "|-----------------------------------------------------------------|\n";
+        cout << "|No students registered. Please register students first.   |\n";
+        cout << "|-----------------------------------------------------------------|\n";
+        return;
+    }
+
+    string name;
+    cout << "|----------------------------------------------------------------------------|\n";
+    cout << "|Enter the name of the student whose image you want to update:|\n";
+    cout << "|----------------------------------------------------------------------------|\n";
+    cin >> name;
+
+    auto it = find_if(students.begin(), students.end(), [&name](const Student& s) { return s.name == name; });
+
+    if (it == students.end()) {
+        cout << "|------------------|\n";
+        cout << "|Student not found.|\n";
+        cout << "|------------------|\n";
+        return;
+    }
+
+    Student& student = *it;
+    Mat frame, faceROI;
+    namedWindow("Update Student Face", WINDOW_AUTOSIZE);  // [Create window]
+
+    while (true) {
+        cap >> frame;  // [Capture frame from camera]
+        faceROI = detectFace(frame, face_cascade);
+        if (!faceROI.empty()) {
+            resize(faceROI, faceROI, Size(100, 100));  // [Resize to standard size]
+            //|---------------------------------------------|
+            //|Save the new face image to the folder|
+            //|---------------------------------------------|
+            string filePath = folderPath + name + ".jpg";
+            imwrite(filePath, faceROI);
+
+            student.face = faceROI;  // [Update the student face in memory]
+            cout << "|updated face for| " << name << ".\n";
+            break;
+        }
+        imshow("Update Student Face", frame);  //[ Show the frame with face detection]
+        if (waitKey(30) >= 0) break;  // [Exit on key press]
+    }
+    destroyWindow("Update Student Face");  // [Destroy window after updating face]
+}
+//|----------------------------------------------------------|
+//| Function to delete a student's reference image   |
+//|----------------------------------------------------------|
+void deleteReferenceFace(vector<Student>& students) {
+    if (students.empty()) {
+        cout << "|---------------------------------------------------------------|\n";
+        cout << "|No students registered. Please register students first.|\n";
+        cout << "|---------------------------------------------------------------|\n";
+        return;
+    }
+
+    string name;
+    cout << "|---------------------------------------------------------------------------|\n";
+    cout << "|Enter the name of the student whose image you want to delete:|\n";
+    cout << "|---------------------------------------------------------------------------|\n";
+    cin >> name;
+
+    // Find the student in the vector
+    auto it = find_if(students.begin(), students.end(), [&name](const Student& s) { return s.name == name; });
+
+    if (it == students.end()) {
+        cout << "|----------------------|\n";
+        cout << "|Student not found.|\n";
+        cout << "|----------------------|\n";
+        return;
+    }
+
+    // Delete the face image from the filesystem
+    string filePath = "C:\\Users\\manis\\Downloads\\reference_faces\\" + name + ".jpg";
+    if (remove(filePath.c_str()) != 0) {
+        cout << "|-----------------------------|\n";
+        cout << "|Error deleting the image file|\n";
+        cout << "|-----------------------------|\n";
+    }
+    else {
+        cout << "|Deleted the face image for | " << name << ".\n";
+    }
+
+    // Remove the student from the vector
+    students.erase(it);
+}
+//|--------------------------------------------------|
+//| Function to view all registered students   |
+//|--------------------------------------------------|
+void viewRegisteredStudents(const vector<Student>& students) {
+    if (students.empty()) {
+        cout << "|---------------------------------------------|\n";
+        cout << "|No students registered yet.                  |\n";
+        cout << "|---------------------------------------------|\n";
+        return;
+    }
+
+    cout << "|------------------ Registered Students ------------------|\n";
+    for (const auto& student : students) {
+        cout << "| " << student.name << "\n";  // Display each student's name
+    }
+    cout << "|-----------------------------------------------------------|\n";
+}
+
+int main() {
+    CascadeClassifier face_cascade;
+    string path = "C:\\Users\\manis\\Downloads\\";  //[ Path where Haarcascade XML file is located]
+
+    // Load Haarcascade XML file
+    if (!face_cascade.load(path + "haarcascade_frontalface_default.xml")) {
+        cout << "|-------------------------------|\n";
+        cout << "|Error loading Haarcascade file |\n";
+        cout << "|-------------------------------|\n";
+        return -1;
+    }
+
+    VideoCapture cap(0);  // [Open the default camera]
+    if (!cap.isOpened()) {
+        cout << "|----------------------|\n";
+        cout << "|Error opening webcam  |\n";
+        cout << "|----------------------|\n";
+        return -1;
+    }
+
+    vector<Student> students;  // [Vector to store student names and faces]
+
+    // [Load reference faces from the folder]
+    loadReferenceFaces(students);
+
+    // Main menu loop
+    while (true) {  // [Loop to continuously show the menu]
+        int choice;
+        cout << "|----------------------------------------|\n";
+        cout << "|-----Welcome to face attendance app-----|\n";
+        cout << "|----------------------------------------|\n";
+        cout << "|Select an option:                       |\n";
+        cout << "|1. Register student faces               |\n";
+        cout << "|2. Mark attendance                      |\n";
+        cout << "|3. Update student face                  |\n";
+        cout << "|4. Delete student face                  |\n";
+        cout << "|5. View registered students             |\n";  // Option to view students
+        cout << "|6. Exit                                 |\n";  // Exit option
+        cout << "|Enter your choice (1, 2, 3, 4, 5, or 6):|\n";
+        cout << "|----------------------------------------|\n";
+        cin >> choice;
+
+        switch (choice) {
+        case 1:
+            captureReferenceFaces(cap, face_cascade, students);  // Capture student faces
+            break;
+        case 2:
+            if (students.empty()) {
+                cout << "|----------------------------------------------------------|\n";
+                cout << "|No student faces registered. Please register faces first. |\n";
+                cout << "|----------------------------------------------------------|\n";
+            }
+            else {
+                markAttendance(cap, face_cascade, students);  // Mark attendance by comparing faces
+            }
+            break;
+        case 3:
+            updateStudentFace(cap, face_cascade, students);  // Update student face
+            break;
+        case 4:
+            deleteReferenceFace(students);  // Call to delete student face
+            break;
+        case 5:
+            viewRegisteredStudents(students);  // Call to view registered students
+            break;
+        case 6:
+            cout << "|----------------------|\n";
+            cout << "|Exiting the program...|\n";
+            cout << "|----------------------|\n";
+            return 0;  // Exit the program successfully
+        default:
+            cout << "|---------------------------------------------|\n";
+            cout << "|Invalid choice. Please select a valid option>|\n";
+            cout << "|---------------------------------------------|\n";
+            break;
+        }
+    }
+
+    return 0; // Indicate successful termination of the program.
+}
